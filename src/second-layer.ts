@@ -1,22 +1,9 @@
-import {KeyStore} from "./key-store";
-
-export type Hash = Buffer;
-export type KeyHash = Hash;
-export type PreSharedKey = Buffer;
-export interface PublicKey {
-    x: Buffer;
-    y: Buffer;
-}
-export type PrivateKey = Buffer;
-export interface Signature {
-    r: Buffer,
-    s: Buffer
-}
+import {Hash, KeyStore, PublicKey, SecretKey} from "./key-store";
 
 export interface RawPacket<C extends Content = Content> {
     rawContent: Buffer;
     signer: PublicKey;
-    signature: Signature;
+    signature: Buffer;
 }
 
 export interface DecodedPacket<C extends Content = Content> extends RawPacket<C> {
@@ -42,7 +29,7 @@ export enum DeliveryType {
 export interface BaseContent {
     type: DeliveryType;
     payload: Buffer;
-    keyHash?: KeyHash;
+    keyHash?: Hash;
     target?: PublicKey;
 }
 
@@ -52,7 +39,7 @@ export interface PlainBroadcastContent extends BaseContent {
 
 export interface EncryptedBroadcastContent extends BaseContent {
     type: DeliveryType.EncryptedBroadcast;
-    keyHash: KeyHash;
+    keyHash: Hash;
 }
 
 export interface PrivateContent extends BaseContent {
@@ -65,11 +52,11 @@ export type Content = PlainBroadcastContent | EncryptedBroadcastContent | Privat
 export interface SecondLayer {
     getKeyStore(): KeyStore;
 
-    decodePacket(raw: Buffer): DecodedPacket;
+    decodePacket(raw: Buffer): Promise<DecodedPacket>;
     validatePacket<C extends Content>(decodedPacket: DecodedPacket<C>): Promise<ValidatedPacket<C>>;
-    decryptPacket<C extends Content>(validatedPacket: ValidatedPacket<C>): DecryptedPacket<C>;
+    decryptPacket<C extends Content>(validatedPacket: ValidatedPacket<C>): Promise<DecryptedPacket<C>>;
 
-    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.PlainBroadcast): Buffer;
-    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.EncryptedBroadcast, key: PreSharedKey): Buffer;
-    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.Private, target: PublicKey): Buffer;
+    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.PlainBroadcast): Promise<Buffer>;
+    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.EncryptedBroadcast, key: SecretKey): Promise<Buffer>;
+    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.Private, target: PublicKey): Promise<Buffer>;
 }

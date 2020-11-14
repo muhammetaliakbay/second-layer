@@ -3,16 +3,14 @@ import {
     DecodedPacket,
     DecryptedPacket,
     DeliveryType,
-    PreSharedKey,
-    PublicKey,
     SecondLayer,
-    Signature,
     ValidatedPacket
 } from "./second-layer";
 
-import {createCipheriv, createDecipheriv, createECDH, createHash, createSign, createVerify, randomBytes} from 'crypto';
+import {KeyStore, PublicKey, SecretKey} from "./key-store";
+import {PublicKeyImpl} from "./key-store-impl";
 
-import {KeyStore} from "./key-store";
+import {crypto, EC256_CURVE} from './crypto';
 
 export class DecodeError extends Error {}
 
@@ -20,6 +18,7 @@ export class InvalidPacketLengthError extends DecodeError {}
 export class InvalidMagicError extends DecodeError {}
 export class InvalidStructureVersionError extends DecodeError {}
 export class InvalidDeliveryTypeCodeError extends DecodeError {}
+export class InvalidPublicKeyError extends DecodeError {}
 
 export class ValidationFailedError extends DecodeError {
     constructor(reason?: any) {
@@ -55,32 +54,46 @@ export class SecondLayerImpl implements SecondLayer {
         return this.keyStore;
     }
 
-    decodePacket(raw: Buffer): DecodedPacket {
+    async decodePacket(raw: Buffer): Promise<DecodedPacket> {
         if (raw.length < 4) {
             throw new InvalidPacketLengthError();
         } else if (!MAGIC.equals(raw.subarray(0, 4))) {
             throw new InvalidMagicError();
         }
 
-        const signer = raw.subarray(4, 4 + 64);
-        if (signer.length !== 64) {
-            throw new InvalidPacketLengthError();
+        const signerFlag = raw.readUInt8(4);
+        let signer: Buffer;
+        if (signerFlag === 2 || signerFlag === 3) {
+            signer = raw.subarray(4, 4 + 33);
+            if (signer.length !== 33) {
+                throw new InvalidPacketLengthError();
+            }
+        } else if (signerFlag === 4) {
+            signer = raw.subarray(4, 4 + 65);
+            if (signer.length !== 65) {
+                throw new InvalidPacketLengthError();
+            }
+        } else {
+            throw new InvalidPublicKeyError();
         }
-        const decodedSigner: PublicKey = {
-            x: signer.subarray(0, 32),
-            y: signer.subarray(32, 64)
-        };
 
-        const signature = raw.subarray(4 + 64, 4 + 64 + 64);
+        const decodedSigner: PublicKey = new PublicKeyImpl(
+            await crypto.subtle.importKey(
+                'raw', signer, {
+                    name: 'ECDSA',
+                    namedCurve: EC256_CURVE
+                }, true, [
+                    'verify'
+                ]
+            )
+        );
+
+        const signature = raw.subarray(4 + signer.length, 4 + signer.length + 64);
         if (signature.length !== 64) {
             throw new InvalidPacketLengthError();
         }
-        const decodedSignature: Signature = {
-            r: signature.subarray(0, 32),
-            s: signature.subarray(32, 64)
-        };
 
-        const content = raw.subarray(4 + 64 + 64);
+        const content = raw.subarray(4 + signer.length + 64);
         if (content.length < 2) {
             throw new InvalidPacketLengthError();
         }
@@ -110,24 +123,41 @@ export class SecondLayerImpl implements SecondLayer {
 
             decodedContent.payload = content.subarray(2 + 32);
         } else if (deliveryType === DeliveryType.Private) {
-            const target = content.subarray(2, 2 + 64);
-            if (target.length !== 64) {
-                throw new InvalidPacketLengthError();
+            const targetFlag = content.readUInt8(2);
+            let target: Buffer;
+            if (targetFlag === 2 || targetFlag === 3) {
+                target = content.subarray(2, 2 + 33);
+                if (target.length !== 33) {
+                    throw new InvalidPacketLengthError();
+                }
+            } else if (targetFlag === 4) {
+                target = content.subarray(2, 2 + 65);
+                if (target.length !== 65) {
+                    throw new InvalidPacketLengthError();
+                }
+            } else {
+                throw new InvalidPublicKeyError();
             }
 
-            decodedContent.target = {
-                x: target.subarray(0, 32),
-                y: target.subarray(32, 64)
-            }
+            decodedContent.target = new PublicKeyImpl(
+                await crypto.subtle.importKey(
+                    'raw', target, {
+                        name: 'ECDSA',
+                        namedCurve: EC256_CURVE
+                    }, true, [
+                        'decrypt'
+                    ]
+                )
+            );
 
-            decodedContent.payload = content.subarray(2 + 64);
+            decodedContent.payload = content.subarray(2 + target.length);
         }
 
         return {
             rawContent: content,
             content: decodedContent,
             signer: decodedSigner,
-            signature: decodedSignature,
+            signature,
             isDecoded: true,
         };
     }
@@ -136,15 +166,10 @@ export class SecondLayerImpl implements SecondLayer {
         let validated: boolean;
 
         try {
-            const verify = createVerify('ecdsa-with-sha256');
-            verify.update(decodedPacket.rawContent);
-            validated = verify.verify(Buffer.concat([
-                decodedPacket.signer.x,
-                decodedPacket.signer.y
-            ]), Buffer.concat([
-                decodedPacket.signature.r,
-                decodedPacket.signature.s
-            ]));
+            validated = await crypto.subtle.verify({
+                name: 'ECDSA',
+                hash: 'SHA-256'
+            }, await decodedPacket.signer.getCryptoKey(), decodedPacket.signature, decodedPacket.rawContent);
         } catch (e) {
             throw new ValidationFailedError(e);
         }
@@ -159,7 +184,7 @@ export class SecondLayerImpl implements SecondLayer {
         };
     }
 
-    decryptPacket<C extends Content>(validatedPacket: ValidatedPacket<C>): DecryptedPacket<C> {
+    async decryptPacket<C extends Content>(validatedPacket: ValidatedPacket<C>): Promise<DecryptedPacket<C>> {
         let decryptedPayload: Buffer;
 
         if (validatedPacket.content.type === DeliveryType.PlainBroadcast) {
@@ -168,57 +193,69 @@ export class SecondLayerImpl implements SecondLayer {
 
         } else if (validatedPacket.content.type === DeliveryType.EncryptedBroadcast) {
 
-            const preSharedKey = this.keyStore.getPreSharedKey(
+            const preSharedKey = await this.keyStore.getSecretKey(
                 validatedPacket.content.keyHash
             );
             if (preSharedKey == null) {
                 throw new KeyNotFoundError();
             }
 
-            const iv = validatedPacket.content.payload.subarray(0, 8);
-            if (iv.length < 8) {
+            const iv = validatedPacket.content.payload.subarray(0, 16);
+            if (iv.length < 16) {
                 throw new InvalidPacketLengthError();
             }
 
-            const encrypted = validatedPacket.content.payload.subarray(8);
+            const encrypted = validatedPacket.content.payload.subarray(16);
 
-            const decipher = createDecipheriv('aes-256-cbc', preSharedKey, iv);
-
-            decryptedPayload = Buffer.concat([
-                decipher.update(encrypted),
-                decipher.final()
-            ]);
+            decryptedPayload = Buffer.from(
+                await crypto.subtle.decrypt(
+                    {
+                        name: 'AES-CBC',
+                        iv
+                    },
+                    await preSharedKey.getCryptoKey(),
+                    encrypted
+                )
+            );
 
         } else if (validatedPacket.content.type === DeliveryType.Private) {
 
-            const privateKey = this.keyStore.getPrivateKey(
+            const privateKey = await this.keyStore.getPrivateKey(
                 validatedPacket.content.target
             );
             if (privateKey == null) {
                 throw new KeyNotFoundError();
             }
 
-            const ecdh = createECDH('secp256k1');
-            ecdh.setPrivateKey(privateKey);
+            const secretKey = await crypto.subtle.deriveKey(
+                {
+                    name: 'ECDH',
+                    public: await validatedPacket.signer.getCryptoKey()
+                }, await privateKey.getCryptoKey(), {
+                    name: 'AES-CBC',
+                    length: 256
+                },
+                false,
+                [
+                    'decrypt'
+                ]
+            );
 
-            const secretKey = ecdh.computeSecret(Buffer.concat([
-                validatedPacket.signer.x,
-                validatedPacket.signer.y
-            ]));
-
-            const iv = validatedPacket.content.payload.subarray(0, 8);
-            if (iv.length < 8) {
+            const iv = validatedPacket.content.payload.subarray(0, 16);
+            if (iv.length < 16) {
                 throw new InvalidPacketLengthError();
             }
 
-            const encrypted = validatedPacket.content.payload.subarray(8);
+            const encrypted = validatedPacket.content.payload.subarray(16);
 
-            const decipher = createDecipheriv('aes-256-cbc', secretKey, iv);
-
-            decryptedPayload = Buffer.concat([
-                decipher.update(encrypted),
-                decipher.final()
-            ]);
+            decryptedPayload = Buffer.from(
+                await crypto.subtle.decrypt(
+                    {
+                        name: 'AES-CBC',
+                        iv
+                    }, secretKey, encrypted
+                )
+            );
 
         }
 
@@ -229,12 +266,12 @@ export class SecondLayerImpl implements SecondLayer {
         };
     }
 
-    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.PlainBroadcast): Buffer;
-    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.EncryptedBroadcast, key: PreSharedKey): Buffer;
-    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.Private, target: PublicKey): Buffer;
-    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.PlainBroadcast | DeliveryType.EncryptedBroadcast | DeliveryType.Private, key?: PreSharedKey | PublicKey): Buffer {
-        const privateKey = this.keyStore.getPrivateKey(signer);
-        if (signer == null) {
+    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.PlainBroadcast): Promise<Buffer>;
+    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.EncryptedBroadcast, key: SecretKey): Promise<Buffer>;
+    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.Private, target: PublicKey): Promise<Buffer>;
+    async encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.PlainBroadcast | DeliveryType.EncryptedBroadcast | DeliveryType.Private, key?: SecretKey | PublicKey): Promise<Buffer> {
+        const privateKey = await this.keyStore.getPrivateKey(signer);
+        if (privateKey == null) {
             throw new KeyNotFoundError();
         }
 
@@ -246,41 +283,45 @@ export class SecondLayerImpl implements SecondLayer {
         if (type === DeliveryType.PlainBroadcast) {
             typeSpecificBlock = EMPTY_BUFFER;
         } else if (type === DeliveryType.EncryptedBroadcast) {
-            const keyHash = createHash('sha256')
-                .update((key as PreSharedKey))
-                .digest();
+            const keyHash = Buffer.from(await crypto.subtle.digest('SHA-256', await key.getRaw()));
 
             typeSpecificBlock = keyHash;
 
-            const iv = randomBytes(8);
-            const cipher = createCipheriv('aes-256-cbc', key as PreSharedKey, iv);
-            const encrypted = Buffer.concat([
-                cipher.update(plainPayload),
-                cipher.final()
-            ]);
+            const iv = crypto.getRandomValues(new Uint8Array(16));
+            const encrypted = Buffer.from(await crypto.subtle.encrypt(
+                {
+                    name: 'AES-CBC',
+                    iv
+                }, await key.getCryptoKey(), plainPayload
+            ));
             payload = Buffer.concat([
                 iv,
                 encrypted
             ]);
         } else if (type === DeliveryType.Private) {
-            const ecdh = createECDH('secp256k1');
-            ecdh.setPrivateKey(privateKey);
+            const secretKey = await crypto.subtle.deriveKey(
+                {
+                    name: 'ECDH',
+                    public: await key.getCryptoKey()
+                }, await privateKey.getCryptoKey(), {
+                    name: 'AES-CBC',
+                    length: 256
+                }, false, ['encrypt']
+            );
 
-            const flatPublicKey = Buffer.concat([
-                (key as PublicKey).x,
-                (key as PublicKey).y
-            ]);
+            const rawTarget = await key.getRaw();
 
-            const secretKey = ecdh.computeSecret(flatPublicKey);
+            typeSpecificBlock = Buffer.from(rawTarget);
 
-            typeSpecificBlock = flatPublicKey;
-
-            const iv = randomBytes(8);
-            const cipher = createCipheriv('aes-256-cbc', secretKey, iv);
-            const encrypted = Buffer.concat([
-                cipher.update(plainPayload),
-                cipher.final()
-            ]);
+            const iv = crypto.getRandomValues(new Uint8Array(16));
+            const encrypted = Buffer.from(
+                await crypto.subtle.encrypt(
+                    {
+                        name: 'AES-CBC',
+                        iv
+                    }, secretKey, plainPayload
+                )
+            );
             payload = Buffer.concat([
                 iv,
                 encrypted
@@ -297,19 +338,21 @@ export class SecondLayerImpl implements SecondLayer {
             payload
         ]);
 
-        const signBuffer = createSign('ecdsa-with-sha256')
-            .update(content)
-            .sign(privateKey);
+        const rawSigner = await signer.getRaw();
 
-        const signature: Signature = {
-            r: signBuffer.subarray(0, 32),
-            s: signBuffer.subarray(32, 64)
-        };
+        const signature = Buffer.from(
+            await crypto.subtle.sign(
+                {
+                    name: 'ECDSA',
+                    hash: 'SHA-256'
+                }, await privateKey.getCryptoKey(), content
+            )
+        );
 
         return Buffer.concat([
             MAGIC,
-            Buffer.concat([signer.x, signer.y]),
-            Buffer.concat([signature.r, signature.s]),
+            rawSigner,
+            signature,
             content
         ]);
     }
