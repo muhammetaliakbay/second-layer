@@ -6,7 +6,7 @@
     "build": "tsc",
     "lint": "eslint ./src/ --ext .ts,.tsx",
     "prepare": "tsc && npm test",
-    "test": "mocha --require esm 'lib/**/*.spec.js'"
+    "test": "mocha --require source-map-support/register --require esm 'lib/**/*.spec.js'"
   },
   "files": [
     "lib/**/*.js",
@@ -17,11 +17,10 @@
   "repository": "https://github.com/dtalk/second-layer",
   "license": "GPL-3.0",
   "dependencies": {
-    "asn1.js": "^5.4.1",
-    "base64url": "^3.0.1"
+    "asn1js": "^2.0.26"
   },
   "devDependencies": {
-    "@types/base64url": "^2.0.0",
+    "@types/asn1js": "^2.0.0",
     "@types/chai": "^4.2.14",
     "@types/mocha": "^8.0.3",
     "@types/node": "^14.14.7",
@@ -31,6 +30,7 @@
     "eslint": "^7.12.1",
     "esm": "^3.2.25",
     "mocha": "^8.2.0",
+    "source-map-support": "^0.5.19",
     "typescript": "^4.0.5"
   }
 }

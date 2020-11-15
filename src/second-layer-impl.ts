@@ -8,7 +8,7 @@ import {
 } from "./second-layer";
 
 import {KeyStore, PublicKey, SecretKey} from "./key-store";
-import {PublicKeyImpl} from "./key-store-impl";
+import {importPublicKey, importPublicKeyXY, PublicKeyImpl} from "./key-store-impl";
 
 import {crypto, EC256_CURVE} from './crypto';
 
@@ -61,39 +61,19 @@ export class SecondLayerImpl implements SecondLayer {
             throw new InvalidMagicError();
         }
 
-        const signerFlag = raw.readUInt8(4);
-        let signer: Buffer;
-        if (signerFlag === 2 || signerFlag === 3) {
-            signer = raw.subarray(4, 4 + 33);
-            if (signer.length !== 33) {
-                throw new InvalidPacketLengthError();
-            }
-        } else if (signerFlag === 4) {
-            signer = raw.subarray(4, 4 + 65);
-            if (signer.length !== 65) {
-                throw new InvalidPacketLengthError();
-            }
-        } else {
-            throw new InvalidPublicKeyError();
+        const signer = raw.subarray(4, 4 + 64);
+        if (signer.length !== 64) {
+            throw new InvalidPacketLengthError();
         }
 
-        const decodedSigner: PublicKey = new PublicKeyImpl(
-            await crypto.subtle.importKey(
-                'raw', signer, {
-                    name: 'ECDSA',
-                    namedCurve: EC256_CURVE
-                }, true, [
-                    'verify'
-                ]
-            )
-        );
+        const signerPub: PublicKey = await importPublicKeyXY(signer);
 
-        const signature = raw.subarray(4 + signer.length, 4 + signer.length + 64);
+        const signature = raw.subarray(4 + 64, 4 + 64 + 64);
         if (signature.length !== 64) {
             throw new InvalidPacketLengthError();
         }
 
-        const content = raw.subarray(4 + signer.length + 64);
+        const content = raw.subarray(4 + 64 + 64);
         if (content.length < 2) {
             throw new InvalidPacketLengthError();
         }
@@ -123,40 +103,20 @@ export class SecondLayerImpl implements SecondLayer {
 
             decodedContent.payload = content.subarray(2 + 32);
         } else if (deliveryType === DeliveryType.Private) {
-            const targetFlag = content.readUInt8(2);
-            let target: Buffer;
-            if (targetFlag === 2 || targetFlag === 3) {
-                target = content.subarray(2, 2 + 33);
-                if (target.length !== 33) {
-                    throw new InvalidPacketLengthError();
-                }
-            } else if (targetFlag === 4) {
-                target = content.subarray(2, 2 + 65);
-                if (target.length !== 65) {
-                    throw new InvalidPacketLengthError();
-                }
-            } else {
-                throw new InvalidPublicKeyError();
+            const target = content.subarray(0, 64);
+            if (target.length !== 64) {
+                throw new InvalidPacketLengthError();
             }
 
-            decodedContent.target = new PublicKeyImpl(
-                await crypto.subtle.importKey(
-                    'raw', target, {
-                        name: 'ECDSA',
-                        namedCurve: EC256_CURVE
-                    }, true, [
-                        'decrypt'
-                    ]
-                )
-            );
+            decodedContent.target = await importPublicKeyXY(target);
 
-            decodedContent.payload = content.subarray(2 + target.length);
+            decodedContent.payload = content.subarray(2 + 64);
         }
 
         return {
             rawContent: content,
             content: decodedContent,
-            signer: decodedSigner,
+            signer: signerPub,
             signature,
             isDecoded: true,
         };
@@ -169,7 +129,7 @@ export class SecondLayerImpl implements SecondLayer {
             validated = await crypto.subtle.verify({
                 name: 'ECDSA',
                 hash: 'SHA-256'
-            }, await decodedPacket.signer.getCryptoKey(), decodedPacket.signature, decodedPacket.rawContent);
+            }, await decodedPacket.signer.getCryptoKey('ECDSA'), decodedPacket.signature, decodedPacket.rawContent);
         } catch (e) {
             throw new ValidationFailedError(e);
         }
@@ -213,7 +173,7 @@ export class SecondLayerImpl implements SecondLayer {
                         name: 'AES-CBC',
                         iv
                     },
-                    await preSharedKey.getCryptoKey(),
+                    await preSharedKey.getCryptoKey('AES'),
                     encrypted
                 )
             );
@@ -227,18 +187,8 @@ export class SecondLayerImpl implements SecondLayer {
                 throw new KeyNotFoundError();
             }
 
-            const secretKey = await crypto.subtle.deriveKey(
-                {
-                    name: 'ECDH',
-                    public: await validatedPacket.signer.getCryptoKey()
-                }, await privateKey.getCryptoKey(), {
-                    name: 'AES-CBC',
-                    length: 256
-                },
-                false,
-                [
-                    'decrypt'
-                ]
+            const secretKey = await this.keyStore.deriveKey(
+                validatedPacket.signer, privateKey
             );
 
             const iv = validatedPacket.content.payload.subarray(0, 16);
@@ -282,8 +232,9 @@ export class SecondLayerImpl implements SecondLayer {
 
         if (type === DeliveryType.PlainBroadcast) {
             typeSpecificBlock = EMPTY_BUFFER;
+            payload = plainPayload;
         } else if (type === DeliveryType.EncryptedBroadcast) {
-            const keyHash = Buffer.from(await crypto.subtle.digest('SHA-256', await key.getRaw()));
+            const keyHash = await key.getHash();
 
             typeSpecificBlock = keyHash;
 
@@ -292,26 +243,18 @@ export class SecondLayerImpl implements SecondLayer {
                 {
                     name: 'AES-CBC',
                     iv
-                }, await key.getCryptoKey(), plainPayload
+                }, await (key as SecretKey).getCryptoKey('AES'), plainPayload
             ));
             payload = Buffer.concat([
                 iv,
                 encrypted
             ]);
         } else if (type === DeliveryType.Private) {
-            const secretKey = await crypto.subtle.deriveKey(
-                {
-                    name: 'ECDH',
-                    public: await key.getCryptoKey()
-                }, await privateKey.getCryptoKey(), {
-                    name: 'AES-CBC',
-                    length: 256
-                }, false, ['encrypt']
-            );
+            const secretKey = await this.keyStore.deriveKey(key as PublicKey, privateKey);
 
-            const rawTarget = await key.getRaw();
+            const targetBytes = await key.getBytes();
 
-            typeSpecificBlock = Buffer.from(rawTarget);
+            typeSpecificBlock = Buffer.from(targetBytes);
 
             const iv = crypto.getRandomValues(new Uint8Array(16));
             const encrypted = Buffer.from(
@@ -319,7 +262,7 @@ export class SecondLayerImpl implements SecondLayer {
                     {
                         name: 'AES-CBC',
                         iv
-                    }, secretKey, plainPayload
+                    }, await secretKey.getCryptoKey('AES'), plainPayload
                 )
             );
             payload = Buffer.concat([
@@ -338,20 +281,20 @@ export class SecondLayerImpl implements SecondLayer {
             payload
         ]);
 
-        const rawSigner = await signer.getRaw();
+        const signerBytes = await signer.getBytes();
 
         const signature = Buffer.from(
             await crypto.subtle.sign(
                 {
                     name: 'ECDSA',
                     hash: 'SHA-256'
-                }, await privateKey.getCryptoKey(), content
+                }, await privateKey.getCryptoKey('ECDSA'), content
             )
         );
 
         return Buffer.concat([
             MAGIC,
-            rawSigner,
+            signerBytes,
             signature,
             content
         ]);
