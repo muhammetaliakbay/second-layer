@@ -26,6 +26,21 @@ describe('SecondLayer tests', async () => {
 
     });
 
+    it('decode PlainBroadcast packet', async () => {
+
+        const packet = await secondLayer.encodePacket(plainData, publicKey, DeliveryType.PlainBroadcast);
+
+        const decodedPacket = await secondLayer.decodePacket(packet);
+
+        assert(await decodedPacket.signer.equals(publicKey), 'Signer public key in packet must be equals to public-key');
+
+        const validatedPacket = await secondLayer.validatePacket(decodedPacket);
+        const decryptedPacket = await secondLayer.decryptPacket(validatedPacket);
+
+        assert(plainData.equals(decryptedPacket.decryptedPayload), 'Source data and decoded data must be equals');
+
+    });
+
     let secretKey: SecretKey;
     let secretKeyHash: Hash;
 
