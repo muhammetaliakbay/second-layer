@@ -15,14 +15,18 @@ export interface Key<ALG extends string> extends HasCryptoKey<ALG>, HasHash, Has
 }
 
 export interface SecretKey extends Key<'AES'> {
-
+    equals(secretKey: SecretKey): Promise<boolean>;
 }
 export interface PublicKey extends Key<'ECDSA' | 'ECDH'>  {
     getXBytes(): Promise<Buffer>;
     getYBytes(): Promise<Buffer>;
+
+    equals(publicKey: PublicKey): Promise<boolean>;
 }
 export interface PrivateKey extends Key<'ECDSA' | 'ECDH'>  {
-    getPublicKey(): Promise<PublicKey>
+    getPublicKey(): Promise<PublicKey>;
+
+    equals(privateKey: PrivateKey): Promise<boolean>;
 }
 
 export interface KeyStore {

@@ -8,25 +8,53 @@ import {
 } from "./second-layer";
 
 import {KeyStore, PublicKey, SecretKey} from "./key-store";
-import {importPublicKey, importPublicKeyXY, PublicKeyImpl} from "./key-store-impl";
+import {importPublicKeyXY} from "./key-store-impl";
 
-import {crypto, EC256_CURVE} from './crypto';
+import {crypto} from './crypto';
 
-export class DecodeError extends Error {}
-
-export class InvalidPacketLengthError extends DecodeError {}
-export class InvalidMagicError extends DecodeError {}
-export class InvalidStructureVersionError extends DecodeError {}
-export class InvalidDeliveryTypeCodeError extends DecodeError {}
-export class InvalidPublicKeyError extends DecodeError {}
-
-export class ValidationFailedError extends DecodeError {
-    constructor(reason?: any) {
-        super(reason);
+export class DecodeError extends Error {
+    constructor(msg?: string) {
+        super(msg ?? 'DecodeError');
     }
 }
 
-export class KeyNotFoundError extends DecodeError {}
+export class InvalidPacketLengthError extends DecodeError {
+    constructor() {
+        super('InvalidPacket');
+    }
+}
+export class InvalidMagicError extends DecodeError {
+    constructor() {
+        super('InvalidMagic');
+    }
+}
+export class InvalidStructureVersionError extends DecodeError {
+    constructor() {
+        super('InvalidStructureVersion');
+    }
+}
+export class InvalidDeliveryTypeCodeError extends DecodeError {
+    constructor() {
+        super('InvalidDeliveryTypeCode');
+    }
+}
+export class InvalidPublicKeyError extends DecodeError {
+    constructor() {
+        super('InvalidPublicKey');
+    }
+}
+
+export class ValidationFailedError extends DecodeError {
+    constructor(reason?: any) {
+        super('ValidationFailed' + (reason == null ? '' : ('(' + reason + ')')));
+    }
+}
+
+export class KeyNotFoundError extends DecodeError {
+    constructor() {
+        super('KeyNotFound');
+    }
+}
 
 const deliveryTypeByCode = [
     DeliveryType.PlainBroadcast,
@@ -103,7 +131,7 @@ export class SecondLayerImpl implements SecondLayer {
 
             decodedContent.payload = content.subarray(2 + 32);
         } else if (deliveryType === DeliveryType.Private) {
-            const target = content.subarray(0, 64);
+            const target = content.subarray(2, 2 + 64);
             if (target.length !== 64) {
                 throw new InvalidPacketLengthError();
             }
@@ -203,7 +231,7 @@ export class SecondLayerImpl implements SecondLayer {
                     {
                         name: 'AES-CBC',
                         iv
-                    }, secretKey, encrypted
+                    }, await secretKey.getCryptoKey('AES'), encrypted
                 )
             );
 

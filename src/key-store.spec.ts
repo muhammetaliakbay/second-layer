@@ -1,6 +1,5 @@
-import { assert, expect } from "chai";
+import { expect } from "chai";
 import {createPrivateKey, createSecretKey} from "./key-store-impl";
-import {crypto} from "./crypto";
 
 describe('KeyStore tests', () => {
 

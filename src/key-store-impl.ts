@@ -6,7 +6,6 @@ import {
     Integer,
     OctetString, ObjectIdentifier
 } from 'asn1js';
-import {InvalidPublicKeyError} from "./second-layer-impl";
 
 export abstract class KeyImpl<ALG extends string> implements Key<ALG> {
     protected abstract createCryptoKey(alg: ALG): Promise<CryptoKey>;
@@ -44,6 +43,15 @@ function decodeB64URL(encoded: string): Buffer {
 }
 
 export class InvalidAlgorithmError extends Error {
+    constructor() {
+        super('InvalidAlgorithm');
+    }
+}
+
+export class InvalidInstanceError extends Error {
+    constructor() {
+        super('InvalidInstance');
+    }
 }
 
 export class SecretKeyImpl extends KeyImpl<'AES'> implements SecretKey {
@@ -63,6 +71,16 @@ export class SecretKeyImpl extends KeyImpl<'AES'> implements SecretKey {
         return crypto.subtle.exportKey('raw', await this.getAnyCryptoKeyOr('AES')).then(
             raw => Buffer.from(raw)
         )
+    }
+
+    async equals(secretKey: SecretKey): Promise<boolean> {
+        if (this === secretKey) {
+            return true;
+        } if (secretKey instanceof SecretKeyImpl) {
+            return (await this.getBytes()).equals(await secretKey.getBytes())
+        } else {
+            throw new InvalidInstanceError();
+        }
     }
 }
 
@@ -108,6 +126,16 @@ export class PublicKeyImpl extends KeyImpl<'ECDSA' | 'ECDH'> implements PublicKe
 
     async getYBytes(): Promise<Buffer> {
         return this.y;
+    }
+
+    async equals(publicKey: PublicKey): Promise<boolean> {
+        if (this === publicKey) {
+            return true;
+        } else if (publicKey instanceof PublicKeyImpl) {
+            return this.x.equals(publicKey.x) && this.y.equals(publicKey.y);
+        } else {
+            throw new InvalidInstanceError();
+        }
     }
 }
 export class PrivateKeyImpl extends KeyImpl<'ECDSA' | 'ECDH'> implements PrivateKey {
@@ -155,9 +183,23 @@ export class PrivateKeyImpl extends KeyImpl<'ECDSA' | 'ECDH'> implements Private
             )
         )
     }
+
+    async equals(privateKey: PrivateKey): Promise<boolean> {
+        if (this === privateKey) {
+            return true;
+        } else if (privateKey instanceof PrivateKeyImpl) {
+            return this.key.equals(privateKey.key);
+        } else {
+            throw new InvalidInstanceError();
+        }
+    }
 }
 
-export class InvalidKeyLengthError extends Error {}
+export class InvalidKeyLengthError extends Error {
+    constructor() {
+        super('InvalidKeyLength');
+    }
+}
 
 export async function createSecretKey(
     bytes: Uint8Array = crypto.getRandomValues(new Uint8Array(32))
