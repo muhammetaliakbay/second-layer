@@ -1,7 +1,6 @@
 {
-  "private": true,
-  "name": "@dtalk/second-layer",
-  "version": "0.0.0-0",
+  "name": "second-layer",
+  "version": "0.0.1",
   "scripts": {
     "build": "tsc",
     "lint": "eslint ./src/ --ext .ts,.tsx",
@@ -14,7 +13,7 @@
   ],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
-  "repository": "https://github.com/dtalk/second-layer",
+  "repository": "https://github.com/muhammetaliakbay/second-layer",
   "license": "GPL-3.0",
   "dependencies": {
     "asn1js": "^2.0.26"
