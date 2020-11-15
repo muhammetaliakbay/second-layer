@@ -2,6 +2,7 @@ import {createPrivateKey, createSecretKey, KeyStoreImpl} from "./key-store-impl"
 import {SecondLayerImpl} from "./second-layer-impl";
 import {DeliveryType} from "./second-layer";
 import { assert } from "chai";
+import {Hash, PrivateKey, PublicKey, SecretKey} from "./key-store";
 
 describe('SecondLayer tests', async () => {
 
@@ -10,9 +11,14 @@ describe('SecondLayer tests', async () => {
 
     const plainData = Buffer.from('Hello World!', 'utf8');
 
-    const privateKey = await createPrivateKey();
-    const publicKey = await privateKey.getPublicKey();
-    await keyStore.putPrivateKey(privateKey);
+    let privateKey: PrivateKey;
+    let publicKey: PublicKey;
+
+    before(async () => {
+        privateKey = await createPrivateKey();
+        publicKey = await privateKey.getPublicKey();
+        await keyStore.putPrivateKey(privateKey);
+    });
 
     it('encode PlainBroadcast packet', async () => {
 
@@ -20,17 +26,45 @@ describe('SecondLayer tests', async () => {
 
     });
 
-    const secretKey = await createSecretKey();
+    let secretKey: SecretKey;
+    let secretKeyHash: Hash;
+
+    before(async () => {
+        secretKey = await createSecretKey();
+        secretKeyHash = await secretKey.getHash();
+        await keyStore.putSecretKey(secretKey);
+    });
 
     it('encode EncryptedBroadcast packet', async () => {
 
-        await secondLayer.encodePacket(plainData, publicKey, DeliveryType.EncryptedBroadcast, secretKey);
+        await secondLayer.encodePacket(plainData, publicKey, DeliveryType.EncryptedBroadcast, secretKeyHash);
 
     });
 
-    const targetPrivate = await createPrivateKey();
-    const target = await targetPrivate.getPublicKey();
-    await keyStore.putPrivateKey(targetPrivate);
+    it('decode EncryptedBroadcast packet', async () => {
+
+        const packet = await secondLayer.encodePacket(plainData, publicKey, DeliveryType.EncryptedBroadcast, secretKeyHash);
+
+        const decodedPacket = await secondLayer.decodePacket(packet);
+
+        assert(await decodedPacket.signer.equals(publicKey), 'Signer public key in packet must be equals to public-key');
+        assert(decodedPacket.content.keyHash.equals(secretKeyHash), 'SecretKey Hash in packet must be equals to hash of secret-key');
+
+        const validatedPacket = await secondLayer.validatePacket(decodedPacket);
+        const decryptedPacket = await secondLayer.decryptPacket(validatedPacket);
+
+        assert(plainData.equals(decryptedPacket.decryptedPayload), 'Source data and decoded data must be equals');
+
+    });
+
+    let targetPrivate: PrivateKey;
+    let target: PublicKey;
+
+    before(async () => {
+        targetPrivate = await createPrivateKey();
+        target = await targetPrivate.getPublicKey();
+        await keyStore.putPrivateKey(targetPrivate);
+    });
 
     it('encode Private packet', async () => {
 

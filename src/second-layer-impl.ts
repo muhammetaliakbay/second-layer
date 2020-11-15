@@ -7,7 +7,7 @@ import {
     ValidatedPacket
 } from "./second-layer";
 
-import {KeyStore, PublicKey, SecretKey} from "./key-store";
+import {Hash, KeyStore, PublicKey, SecretKey} from "./key-store";
 import {importPublicKeyXY} from "./key-store-impl";
 
 import {crypto} from './crypto';
@@ -245,9 +245,9 @@ export class SecondLayerImpl implements SecondLayer {
     }
 
     encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.PlainBroadcast): Promise<Buffer>;
-    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.EncryptedBroadcast, key: SecretKey): Promise<Buffer>;
+    encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.EncryptedBroadcast, keyHash: Hash): Promise<Buffer>;
     encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.Private, target: PublicKey): Promise<Buffer>;
-    async encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.PlainBroadcast | DeliveryType.EncryptedBroadcast | DeliveryType.Private, key?: SecretKey | PublicKey): Promise<Buffer> {
+    async encodePacket(plainPayload: Buffer, signer: PublicKey, type: DeliveryType.PlainBroadcast | DeliveryType.EncryptedBroadcast | DeliveryType.Private, keyHashOrTarget?: Hash | PublicKey): Promise<Buffer> {
         const privateKey = await this.keyStore.getPrivateKey(signer);
         if (privateKey == null) {
             throw new KeyNotFoundError();
@@ -262,7 +262,8 @@ export class SecondLayerImpl implements SecondLayer {
             typeSpecificBlock = EMPTY_BUFFER;
             payload = plainPayload;
         } else if (type === DeliveryType.EncryptedBroadcast) {
-            const keyHash = await key.getHash();
+            const keyHash = keyHashOrTarget as Hash;
+            const key = await this.keyStore.getSecretKey(keyHash);
 
             typeSpecificBlock = keyHash;
 
@@ -271,16 +272,18 @@ export class SecondLayerImpl implements SecondLayer {
                 {
                     name: 'AES-CBC',
                     iv
-                }, await (key as SecretKey).getCryptoKey('AES'), plainPayload
+                }, await key.getCryptoKey('AES'), plainPayload
             ));
             payload = Buffer.concat([
                 iv,
                 encrypted
             ]);
         } else if (type === DeliveryType.Private) {
-            const secretKey = await this.keyStore.deriveKey(key as PublicKey, privateKey);
+            const target = keyHashOrTarget as PublicKey;
 
-            const targetBytes = await key.getBytes();
+            const secretKey = await this.keyStore.deriveKey(target, privateKey);
+
+            const targetBytes = await target.getBytes();
 
             typeSpecificBlock = Buffer.from(targetBytes);
 
