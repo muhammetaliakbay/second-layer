@@ -289,7 +289,7 @@ export class KeyStoreImpl implements KeyStore {
     private ecKeys: {pubBytes: Buffer, priBytes: Buffer, pub: PublicKey, pri: PrivateKey}[] = [];
     private derivedKeys: {pubBytesA: Buffer, pubBytesB: Buffer, key: SecretKey}[] = [];
 
-    async deriveKey(publicKey: PublicKey, privateKey: PrivateKey): Promise<SecretKey | undefined> {
+    async deriveKey(publicKey: PublicKey, privateKey: PrivateKey): Promise<SecretKey> {
         const pubB = await privateKey.getPublicKey();
         const pubBytesB = await pubB.getBytes();
 

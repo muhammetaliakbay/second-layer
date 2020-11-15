@@ -7,7 +7,7 @@ import {
     ValidatedPacket
 } from "./second-layer";
 
-import {Hash, KeyStore, PublicKey, SecretKey} from "./key-store";
+import {Hash, KeyStore, PublicKey} from "./key-store";
 import {importPublicKeyXY} from "./key-store-impl";
 
 import {crypto} from './crypto';
